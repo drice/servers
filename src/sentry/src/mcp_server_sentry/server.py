@@ -45,12 +45,15 @@ Event Count: {self.count}
             description=f"Sentry Issue: {self.title}",
             messages=[
                 types.PromptMessage(
-                    role="user", content=types.TextContent(type="text", text=self.to_text())
+                    role="user",
+                    content=types.TextContent(type="text", text=self.to_text()),
                 )
             ],
         )
 
-    def to_tool_result(self) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    def to_tool_result(
+        self,
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
         return [types.TextContent(type="text", text=self.to_text())]
 
 
@@ -72,7 +75,9 @@ def extract_issue_id(issue_id_or_url: str) -> str:
     if issue_id_or_url.startswith(("http://", "https://")):
         parsed_url = urlparse(issue_id_or_url)
         if not parsed_url.hostname or not parsed_url.hostname.endswith(".sentry.io"):
-            raise SentryError("Invalid Sentry URL. Must be a URL ending with .sentry.io")
+            raise SentryError(
+                "Invalid Sentry URL. Must be a URL ending with .sentry.io"
+            )
 
         path_parts = parsed_url.path.strip("/").split("/")
         if len(path_parts) < 2 or path_parts[0] != "issues":
@@ -177,7 +182,7 @@ async def handle_sentry_issue(
             first_seen=issue_data["firstSeen"],
             last_seen=issue_data["lastSeen"],
             count=issue_data["count"],
-            stacktrace=stacktrace
+            stacktrace=stacktrace,
         )
 
     except SentryError as e:
@@ -186,6 +191,56 @@ async def handle_sentry_issue(
         raise McpError(f"Error fetching Sentry issue: {str(e)}")
     except Exception as e:
         raise McpError(f"An error occurred: {str(e)}")
+
+
+async def handle_list_sentry_issues(
+    http_client: httpx.AsyncClient,
+    auth_token: str,
+    project: str,
+    environment: str,
+    duration: str = "7d",
+    query: str = None,
+    sort: str = None,
+    limit: int = None,
+) -> list[str]:
+    parts = project.split("/")
+    if len(parts) != 2:
+        raise McpError("Project must be in the format 'organization/project'")
+    organization, project_slug = parts
+    params = {
+        "environment": environment,
+        "statsPeriod": duration,
+    }
+    if query:
+        params["query"] = query
+    if sort:
+        params["sort"] = sort
+    if limit:
+        params["limit"] = limit
+    response = await http_client.get(
+        f"projects/{organization}/{project_slug}/issues/",
+        headers={"Authorization": f"Bearer {auth_token}"},
+        params=params,
+    )
+    if response.status_code == 401:
+        raise McpError(
+            "Error: Unauthorized. Please check your MCP_SENTRY_AUTH_TOKEN token."
+        )
+    response.raise_for_status()
+    issues = response.json()
+    summaries = []
+    for issue in issues:
+        summary = (
+            f"Issue: {issue.get('title', 'N/A')}\n"
+            f"ID: {issue.get('id', 'N/A')}\n"
+            f"Status: {issue.get('status', 'N/A')}\n"
+            f"Level: {issue.get('level', 'N/A')}\n"
+            f"First Seen: {issue.get('firstSeen', 'N/A')}\n"
+            f"Last Seen: {issue.get('lastSeen', 'N/A')}\n"
+            f"Count: {issue.get('count', 'N/A')}"
+        )
+        summaries.append(summary)
+    return summaries
 
 
 async def serve(auth_token: str) -> Server:
@@ -235,28 +290,91 @@ async def serve(auth_token: str) -> Server:
                     "properties": {
                         "issue_id_or_url": {
                             "type": "string",
-                            "description": "Sentry issue ID or URL to analyze"
+                            "description": "Sentry issue ID or URL to analyze",
                         }
                     },
-                    "required": ["issue_id_or_url"]
-                }
-            )
+                    "required": ["issue_id_or_url"],
+                },
+            ),
+            types.Tool(
+                name="list_sentry_issues",
+                description="""List Sentry issues for a project. Use this tool when you need to:
+                - Retrieve a list of issues for a specific project
+                - Filter issues by status, level, or date range
+                - Get a summary of issues for analysis""",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project": {
+                            "type": "string",
+                            "description": "Sentry project identifier in the format 'organization/project'",
+                        },
+                        "environment": {
+                            "type": "string",
+                            "description": "Environment (e.g., production, staging)",
+                        },
+                        "duration": {
+                            "type": "string",
+                            "description": "Time range for issues (e.g. '7d' for the last 7 days)",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Optional query for filtering issues (e.g., 'is:unresolved')",
+                        },
+                        "sort": {
+                            "type": "string",
+                            "description": "Optional sort order (e.g., 'new', 'old', 'priority', 'freq')",
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Optional limit on the number of results",
+                        },
+                    },
+                    "required": ["project", "environment"],
+                },
+            ),
         ]
 
     @server.call_tool()
     async def handle_call_tool(
         name: str, arguments: dict | None
     ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-        if name != "get_sentry_issue":
+        if name not in ("get_sentry_issue", "list_sentry_issues"):
             raise ValueError(f"Unknown tool: {name}")
+        if not arguments:
+            raise ValueError("Missing required arguments")
 
-        if not arguments or "issue_id_or_url" not in arguments:
-            raise ValueError("Missing issue_id_or_url argument")
-
-        issue_data = await handle_sentry_issue(http_client, auth_token, arguments["issue_id_or_url"])
-        return issue_data.to_tool_result()
+        if name == "get_sentry_issue":
+            if "issue_id_or_url" not in arguments:
+                raise ValueError("Missing required argument: issue_id_or_url")
+            issue_data = await handle_sentry_issue(
+                http_client, auth_token, arguments["issue_id_or_url"]
+            )
+            return issue_data.to_tool_result()
+        elif name == "list_sentry_issues":
+            if "project" not in arguments or "environment" not in arguments:
+                raise ValueError("Missing required arguments for list_sentry_issues")
+            duration = arguments.get("duration", "7d")
+            query = arguments.get("query")
+            sort = arguments.get("sort")
+            limit = arguments.get("limit")
+            issues_summaries = await handle_list_sentry_issues(
+                http_client,
+                auth_token,
+                arguments["project"],
+                arguments["environment"],
+                duration,
+                query,
+                sort,
+                limit,
+            )
+            return [
+                types.TextContent(type="text", text=summary)
+                for summary in issues_summaries
+            ]
 
     return server
+
 
 @click.command()
 @click.option(
