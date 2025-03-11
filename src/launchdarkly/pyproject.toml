@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-server-launchdarkly"
+version = "0.1.0"
+description = "LaunchDarkly MCP Server"
+readme = "README.md"
+requires-python = ">=3.13"
+license = {text = "MIT"}
+authors = [
+    {name = "MCP Contributors"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "mcp>=1.1.3",
+    "launchdarkly-server-sdk>=9.0.0",
+    "launchdarkly-api>=3.0.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.26.0",
+    "click>=8.1.7",
+]
+
+[project.scripts]
+mcp-server-launchdarkly = "mcp_server_launchdarkly.__main__:main"
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0"
+]
+
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[[tool.mypy.overrides]]
+module = "ldclient.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "launchdarkly_api.*"
+ignore_missing_imports = true
